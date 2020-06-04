@@ -74,7 +74,10 @@ class Model(pl.LightningModule):
         else:
             parameters = self.model.parameters()
 
-        optimizer = torch.optim.Adam(parameters, lr=self.lr, weight_decay=self.weight_decay)
+        if self.optimizer_name == 'adam':
+            optimizer = torch.optim.Adam(parameters, lr=self.lr, weight_decay=self.weight_decay)
+        elif self.optimizer_name == 'sgd':
+            optimizer = torch.optim.SGD(parameters, lr=self.lr, weight_decay=self.weight_decay, momentum=self.momentum)
         # TODO: add loading models
         scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, patience=2, verbose=True)
         
@@ -148,12 +151,13 @@ class Model(pl.LightningModule):
         arg = parser.add_argument
         arg('--model_name', default='resnext50_32x4d_ssl_finetune', help='Name of a model for factory')
         arg('--transform_name', type=str, default='medium_1', help='Name for transform factory')
+        arg('--optimizer_name', type=str, default='sgd', help='sgd/adam')
         arg('--image_size', type=int, default=256, help='image size NxN')
-        arg('--batch_size', type=int, default=256, help='batch_size per gpu')
-        arg('--lr', type=float, default=1e-4)  # 3e-4
-        arg('--weight_decay', type=float, default=5e-4)
+        arg('--batch_size', type=int, default=64, help='batch_size per gpu')
+        arg('--lr', type=float, default=1e-2)  # 3e-4
+        arg('--weight_decay', type=float, default=5e-4) # 5e-4
         arg('--momentum', type=float, default=0.9)
-        arg('--max_epochs', type=int, default=10)
+        arg('--max_epochs', type=int, default=20)
         return parser
 
 
@@ -169,6 +173,8 @@ def main():
     args = parser.parse_args()
     if args.model_name is None or args.transform_name is None:
         raise ValueError('Specify model name and transformation rule')
+    if args.optimizer_name not in ('sgd', 'adam'):
+        raise (ValueError, 'Please choose optimizer from sgd|adam')
     #
     init_seed(seed=args.seed)
     experiment_name = md5(bytes(str(args), encoding='utf8')).hexdigest()
@@ -178,6 +184,8 @@ def main():
                                                    monitor='auc', mode='max', save_top_k=3)
     
     model = Model(**vars(args))
+    # TODO: check val loop with 1.0 - the same number
+    # TODO: add early stopping
     trainer = pl.Trainer.from_argparse_args(args, checkpoint_callback=checkpoint_callback,
                                             ) #early_stop_callback=True, se_amp=False
     trainer.fit(model)

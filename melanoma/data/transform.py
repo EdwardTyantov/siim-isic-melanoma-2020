@@ -75,6 +75,22 @@ def medium_1(image_size, p=0.5):
     ], p=p)
 
 
+def medium_2():
+    # RandomCrop(input_size) / RandomResizedCrop (0.08, 1)
+    # RandomHorizontalFlip
+    # RandomVerticalFlip
+    # ColorJitter(brightness=mdlParams.get('brightness_aug',32. / 255.),saturation=mdlParams.get('saturation_aug',0.5), contrast = mdlParams.get('contrast_aug',0.5), hue = mdlParams.get('hue_aug',0.2)))
+    #             else: ColorJitter(brightness=32. / 255.,saturation=0.5))
+    
+    # + AutoAugment?
+    #Cutout 16
+    
+    
+    
+    # (0.8,1.2), shear=10, mdlParams['full_rot'] = 180
+    pass
+
+
 def factory(name, image_size, p=0.5, without_norm=False):
     tr_func = globals().get(name, None)
     if tr_func is None:
@@ -101,4 +117,3 @@ def factory(name, image_size, p=0.5, without_norm=False):
     test_transform = val_transform # TODO: tta (return list)
     
     return train_transform, val_transform, test_transform
-

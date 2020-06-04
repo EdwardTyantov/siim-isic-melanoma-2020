@@ -11,12 +11,16 @@ Pytorch lightning code for SIIM-ISIC Melanoma Classification https://www.kaggle.
  
  ### TODO:
   - FP-16
-  - Albu
-  - other features & targets
+  - Albu ( CutOut)
+  - aug-mix
+  - loss weighting
+  - AutoAugment
+  - other features & targets (MLP)
+  - - drop each feature is set to missing with this prob
   - Kfold
   - Efficient Net
   - focal loss from retinanet
-  - aug-mix
   - data echoing (https://arxiv.org/abs/1907.05550)
   - prepare data (resize, numpy)
   - try hyper-opt
+  - ensembling

@@ -7,7 +7,7 @@ __all__ = ['factory', ]
 def resnext50_32x4d_ssl_finetune(pretrained):
     net = resnext50_32x4d_ssl(pretrained=pretrained)
     layers = {
-        'trained': [ (net.layer4, 1), ],
+        'trained': [ (net.layer4, 1),(net.layer3, 0.5) ],
         'untrained': [(net.fc, 1), ],
     }
     return net, layers

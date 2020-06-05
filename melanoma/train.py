@@ -12,6 +12,7 @@ from utils import init_seed
 from models import factory as model_factory
 from models.losses import FocalLoss
 from data.utils import Datasets
+from utils import ReduceLROnPlateau
 
 
 logger = logging.getLogger('app')
@@ -26,7 +27,8 @@ class Model(pl.LightningModule):
         for k,v in kwargs.items(): # maybe iterate them, but too much repetition
             setattr(self, k, v)
         self.hparams = kwargs
-        self.num_workers = self.distributed_backend == 'dp' and self.num_workers or self.num_workers // self.gpus
+        self.is_ddp = self.distributed_backend in ('ddp', 'ddp2')
+        self.num_workers = self.is_ddp and self.num_workers // self.gpus or self.num_workers
         
     def prepare_data(self) -> None:
         ds = Datasets(IMAGE_DIR, TRAIN_CSV, TEST_CSV, self.transform_name, self.image_size, p=0.5, val_split=0.2)
@@ -71,6 +73,7 @@ class Model(pl.LightningModule):
                 parameters.append({'params': layer.parameters(), 'lr': lr, 'after_warmup_lr': lr})
                 for param in layer.parameters():
                     param.requires_grad = True
+            logger.info(str(parameters))
         else:
             parameters = self.model.parameters()
 
@@ -78,16 +81,42 @@ class Model(pl.LightningModule):
             optimizer = torch.optim.Adam(parameters, lr=self.lr, weight_decay=self.weight_decay)
         elif self.optimizer_name == 'sgd':
             optimizer = torch.optim.SGD(parameters, lr=self.lr, weight_decay=self.weight_decay, momentum=self.momentum)
-        # TODO: add loading models
-        scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, patience=2, verbose=True)
-        
+        scheduler = ReduceLROnPlateau(optimizer, patience=2, verbose=True, callback=self.load_best_model)
         return [optimizer], [scheduler]
 
-    # learning rate warm-up
+    def load_best_model(self):
+        "Don't try at home. This is done for ReduceLROnPlateau to load best weights, when reduce LR"
+        checkpoint = self.trainer.checkpoint_callback
+        if checkpoint is None:
+            raise (Exception, 'Callback wasn\'t specified')
+        tmp_file = '/tmp/djhasjkdaskjd.tmp'
+        # the checkpoint contains best k models, let's extract best path
+        if not (self.is_ddp and dist.get_rank() != 0):
+            _op = min if checkpoint.mode == 'min' else max
+            best_path = _op(checkpoint.best_k_models, key=checkpoint.best_k_models.get)
+            with open(tmp_file, 'w') as wf: # TODO: refactor string broadcast
+                wf.write(best_path)
+        if self.is_ddp:
+            torch.distributed.barrier()
+        with open(tmp_file) as rf:
+            best_path = rf.read()
+        
+        logger.info(f'Loading best_path={best_path}')
+        # perform load, only for gpu training
+        torch.cuda.empty_cache()
+        obj = torch.load(best_path, map_location=lambda storage, loc: storage)
+        model = self.trainer.get_model()
+        model.load_state_dict(obj['state_dict'])
+        model.cuda(self.trainer.root_gpu)
+        if self.is_ddp:
+            torch.distributed.barrier()
+        if not (self.is_ddp and dist.get_rank() != 0):
+            os.remove(tmp_file)
+        torch.cuda.empty_cache()
+
     def optimizer_step(self, current_epoch, batch_nb, optimizer, optimizer_i, second_order_closure=None):
+        "Overrides to implement warm-up for specific layers"
         if self.warmup == 1:
-            # warm up lr
-            #print('current_epoch', current_epoch, 'rank=', dist.get_rank(), 'step', self.trainer.global_step, len(self.trainer.train_dataloader))
             one_epoch_length = len(self.trainer.train_dataloader)
             if self.trainer.global_step < one_epoch_length:
                  lr_scale = min(1., float(self.trainer.global_step + 1) / one_epoch_length)
@@ -96,9 +125,7 @@ class Model(pl.LightningModule):
                      if after_warmup_lr is not None:
                         pg['lr'] = lr_scale * after_warmup_lr
 
-        # update params
-        optimizer.step()
-        optimizer.zero_grad()
+        super().optimizer_step(current_epoch, batch_nb, optimizer, optimizer_i, second_order_closure)
     
     def training_step(self, batch, batch_idx):
         # TODO: try data echoing
@@ -121,7 +148,7 @@ class Model(pl.LightningModule):
         probs = torch.cat([out['probs'] for out in outputs], dim=0)
         targets = torch.cat([out['target'] for out in outputs], dim=0)
         
-        if self.distributed_backend in ('ddp', 'ddp2'):
+        if self.is_ddp:
             probs = gather(probs)
             targets = gather(targets)
             avg_loss = gather(avg_loss.unsqueeze(dim=0)).mean()
@@ -182,12 +209,14 @@ def main():
     tb_logger = TensorBoardLogger(save_dir=RESULT_DIR, name=experiment_name, version=int(time.time()))
     checkpoint_callback = pl.callbacks.ModelCheckpoint(filepath=tb_logger.log_dir + "/{epoch:02d}-{auc:.4f}",
                                                    monitor='auc', mode='max', save_top_k=3)
+    earlystop_callback = pl.callbacks.EarlyStopping(patience=6)
     
     model = Model(**vars(args))
-    # TODO: check val loop with 1.0 - the same number
-    # TODO: add early stopping
     trainer = pl.Trainer.from_argparse_args(args, checkpoint_callback=checkpoint_callback,
-                                            ) #early_stop_callback=True, se_amp=False
+                                            earlystop_callback=earlystop_callback,
+                                            # train_percent_check=0.01,
+                                            # val_percent_check=0.1,
+                                            )  # use_amp=False
     trainer.fit(model)
     
     # TODO: use patient ID to predict

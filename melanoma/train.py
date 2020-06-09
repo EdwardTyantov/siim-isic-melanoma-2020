@@ -186,7 +186,7 @@ class Model(pl.LightningModule):
         arg('--p', type=float, default=0.95, help='prob of an augmentation') # exp
         arg('--batch_size', type=int, default=64, help='batch_size per gpu') # 128
         arg('--lr', type=float, default=0.5)  # 1e-1
-        arg('--weight_decay', type=float, default=1e5) # 5e-4
+        arg('--weight_decay', type=float, default=1e-5) # 5e-4
         arg('--momentum', type=float, default=0.9)
         arg('--max_epochs', type=int, default=30) # 30
         return parser

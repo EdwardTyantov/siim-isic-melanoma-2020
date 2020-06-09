@@ -75,20 +75,18 @@ def medium_1(image_size, p=0.5):
     ], p=p)
 
 
-def medium_2():
-    # RandomCrop(input_size) / RandomResizedCrop (0.08, 1)
-    # RandomHorizontalFlip
-    # RandomVerticalFlip
-    # ColorJitter(brightness=mdlParams.get('brightness_aug',32. / 255.),saturation=mdlParams.get('saturation_aug',0.5), contrast = mdlParams.get('contrast_aug',0.5), hue = mdlParams.get('hue_aug',0.2)))
-    #             else: ColorJitter(brightness=32. / 255.,saturation=0.5))
-    
-    # + AutoAugment?
-    #Cutout 16
-    
-    
-    
-    # (0.8,1.2), shear=10, mdlParams['full_rot'] = 180
-    pass
+def medium_2(image_size, p=1.0):
+    cutout_crop = int(0.25*image_size)
+    return A.Compose([
+        # RandomCrop(input_size) / RandomResizedCrop (0.08, 1)
+        A.HorizontalFlip(p=0.5), # vflip
+        A.VerticalFlip(p=0.5), # hflip
+        A.ShiftScaleRotate(shift_limit=0.0625, scale_limit=0.2, rotate_limit=45, p=0.3),
+        # shear 10,
+        A.RandomBrightnessContrast(brightness_limit=0.125, contrast_limit=0.2, p=0.5), # contrast_limit=0.5
+        A.HueSaturationValue(hue_shift_limit=5, p=0.2),
+        A.Cutout(num_holes=2, max_h_size=cutout_crop, max_w_size=cutout_crop, p=0.5)
+    ], p=p)
 
 
 def factory(name, image_size, p=0.5, without_norm=False):
@@ -99,19 +97,15 @@ def factory(name, image_size, p=0.5, without_norm=False):
     norm = {'mean': [0.485, 0.456, 0.406], 'std': [0.229, 0.224, 0.225]} if not without_norm else None
     
     max_size_tr = A.SmallestMaxSize(max_size=image_size, always_apply=True)
-    resize_tr = A.Compose([
-        # TODO: add Padded to image_size * 3/2 or delete rotate
-        A.RandomCrop(image_size, image_size, always_apply=True),
-    ])
     train_transform = A.Compose([
         max_size_tr,
         tr_func(image_size, p),
-        resize_tr,
+        A.RandomCrop(image_size, image_size, always_apply=True),
         ToTensor(normalize=norm),
     ])
     val_transform = A.Compose([
         max_size_tr,
-        resize_tr,
+        A.CenterCrop(image_size, image_size, always_apply=True),
         ToTensor(normalize=norm),
     ])
     test_transform = val_transform # TODO: tta (return list)

@@ -21,10 +21,8 @@ class Datasets(object):
         train_idx, val_idx = train_test_split(np.arange(len(patient_ids)), stratify=(patient_means > 0),
                                               test_size=val_split)
         pid_train, pid_val = patient_ids[train_idx], patient_ids[val_idx]
-
         tr_df = train_df[train_df['patient_id'].isin(pid_train)]
         val_df = train_df[train_df['patient_id'].isin(pid_val)]
-        
         
         self.train_dataset = SIIMDataset(image_dir, tr_df, self.transform_train, is_test=False)
         self.val_dataset = SIIMDataset(image_dir, val_df, self.transform_val, is_test=False)

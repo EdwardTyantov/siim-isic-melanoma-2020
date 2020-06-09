@@ -31,7 +31,7 @@ class Model(pl.LightningModule):
         self.num_workers = self.is_ddp and self.num_workers // self.gpus or self.num_workers
         
     def prepare_data(self) -> None:
-        ds = Datasets(IMAGE_DIR, TRAIN_CSV, TEST_CSV, self.transform_name, self.image_size, p=0.5, val_split=0.2)
+        ds = Datasets(IMAGE_DIR, TRAIN_CSV, TEST_CSV, self.transform_name, self.image_size, p=self.p, val_split=0.2)
         self.train_dataset = ds.train_dataset
         self.val_dataset = ds.val_dataset
         self.test_dataset = ds.test_dataset
@@ -81,7 +81,10 @@ class Model(pl.LightningModule):
             optimizer = torch.optim.Adam(parameters, lr=self.lr, weight_decay=self.weight_decay)
         elif self.optimizer_name == 'sgd':
             optimizer = torch.optim.SGD(parameters, lr=self.lr, weight_decay=self.weight_decay, momentum=self.momentum)
-        scheduler = ReduceLROnPlateau(optimizer, patience=2, verbose=True, callback=self.load_best_model)
+        elif self.optimizer_name == 'rmsprop':
+            optimizer = torch.optim.RMSprop(parameters, lr=self.lr, weight_decay=self.weight_decay)
+        scheduler = ReduceLROnPlateau(optimizer, patience=1, verbose=True, callback=self.load_best_model)
+        #scheduler = torch.optim.lr_scheduler.ExponentialLR(optimizer, gamma=0.97)
         return [optimizer], [scheduler]
 
     def load_best_model(self):
@@ -176,15 +179,16 @@ class Model(pl.LightningModule):
     def add_model_specific_args(parent_parser):
         parser = argparse.ArgumentParser(parents=[parent_parser], add_help=False)
         arg = parser.add_argument
-        arg('--model_name', default='resnext50_32x4d_ssl_finetune', help='Name of a model for factory')
-        arg('--transform_name', type=str, default='medium_1', help='Name for transform factory')
-        arg('--optimizer_name', type=str, default='sgd', help='sgd/adam')
+        arg('--model_name', default='efficientnetb4_fc', help='Name of a model for factory') # resnext50_32x4d_ssl_fc
+        arg('--transform_name', type=str, default='medium_2', help='Name for transform factory')
+        arg('--optimizer_name', type=str, default='sgd', help='sgd/adam/rmsprop')
         arg('--image_size', type=int, default=256, help='image size NxN')
-        arg('--batch_size', type=int, default=64, help='batch_size per gpu')
-        arg('--lr', type=float, default=1e-2)  # 3e-4
-        arg('--weight_decay', type=float, default=5e-4) # 5e-4
+        arg('--p', type=float, default=0.95, help='prob of an augmentation') # exp
+        arg('--batch_size', type=int, default=64, help='batch_size per gpu') # 128
+        arg('--lr', type=float, default=0.5)  # 1e-1
+        arg('--weight_decay', type=float, default=1e5) # 5e-4
         arg('--momentum', type=float, default=0.9)
-        arg('--max_epochs', type=int, default=20)
+        arg('--max_epochs', type=int, default=30) # 30
         return parser
 
 
@@ -193,14 +197,14 @@ def main():
     arg = parser.add_argument
     arg('--seed', type=int, default=666)
     arg('--distributed_backend', type=str, default='ddp')
-    arg('--num_workers', type=int, default=6)
+    arg('--num_workers', type=int, default=4)
     arg('--gpus', type=int, default=2)
     arg('--num_nodes', type=int, default=1)
     parser = Model.add_model_specific_args(parser)
     args = parser.parse_args()
     if args.model_name is None or args.transform_name is None:
         raise ValueError('Specify model name and transformation rule')
-    if args.optimizer_name not in ('sgd', 'adam'):
+    if args.optimizer_name not in ('sgd', 'adam', 'rmsprop'):
         raise (ValueError, 'Please choose optimizer from sgd|adam')
     #
     init_seed(seed=args.seed)
@@ -208,12 +212,12 @@ def main():
     logger.info(str(args)); logger.info(f'experiment_name={experiment_name}')
     tb_logger = TensorBoardLogger(save_dir=RESULT_DIR, name=experiment_name, version=int(time.time()))
     checkpoint_callback = pl.callbacks.ModelCheckpoint(filepath=tb_logger.log_dir + "/{epoch:02d}-{auc:.4f}",
-                                                   monitor='auc', mode='max', save_top_k=3)
-    earlystop_callback = pl.callbacks.EarlyStopping(patience=6)
+                                                   monitor='auc', mode='max', save_top_k=3, verbose=True)
+    earlystop_callback = pl.callbacks.EarlyStopping(patience=6, verbose=True) # doesn't start even
     
     model = Model(**vars(args))
     trainer = pl.Trainer.from_argparse_args(args, checkpoint_callback=checkpoint_callback,
-                                            earlystop_callback=earlystop_callback,
+                                            earlystop_callback=earlystop_callback, logger=tb_logger,
                                             # train_percent_check=0.01,
                                             # val_percent_check=0.1,
                                             )  # use_amp=False

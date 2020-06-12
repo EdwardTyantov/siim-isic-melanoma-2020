@@ -1,1 +1,1 @@
-from .utils import factory
+from .factory import factory

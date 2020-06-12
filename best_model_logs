@@ -1,6 +1,6 @@
-/mnt/fastdata/kaggle/workdir/results/f7aad491ee3accfdac7b42f0c6754be4/version_1591649407/epoch=23-auc=0.9147.ckpt
-2020-06-08 23:50:07 Namespace(batch_size=128, distributed_backend='ddp', gpus=2, image_size=256, lr=0.1, max_epochs=30, model_name='resnext50_32x4d_ssl_fc', momentum=0.9, num_nodes=1, num_workers=4, optimizer_name='sgd',
- p=0.95, seed=666, transform_name='medium_2', weight_decay=0.0005)
+2020-06-12 23:43:36 Namespace(batch_size=128, distributed_backend='ddp', gpus=8, image_size=256, lr=0.1, max_epochs=30, model_name='resnext50_32x4d_ssl_fc', momentum=0.9, num_nodes=1, num_workers=8, optimizer_name='sgd', p=0.95, seed=666, transform_name='medium_2', weight_decay=0.0005)
+2020-06-12 23:43:36 experiment_name=8837bd2db313e32bfa0fc5bbc75a982d
+Epoch 00024: auc reached 0.95008 (best 0.95008), saving model to /mnt/fastdata/kaggle/workdir/results/8837bd2db313e32bfa0fc5bbc75a982d/version_1591994616/epoch=24-auc=0.95008.ckpt as top 3
 
 efficientnet
 2020-06-09 12:07:46 Namespace(batch_size=64, distributed_backend='ddp', gpus=2, image_size=256, lr=1, max_epochs=30, model_name='efficientnetb4_fc', momentum=0.9, num_nodes=1, num_workers=4, optimizer_name='sgd', p=0.95,

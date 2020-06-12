@@ -89,6 +89,24 @@ def medium_2(image_size, p=1.0):
     ], p=p)
 
 
+def medium_3(image_size, p=1.0):
+    cutout_crop = int(0.25*image_size)
+    return A.Compose([
+        # RandomCrop(input_size) / RandomResizedCrop (0.08, 1)
+        A.HorizontalFlip(p=0.5), # vflip
+        A.VerticalFlip(p=0.5), # hflip
+        A.ShiftScaleRotate(shift_limit=0.0625, scale_limit=0.2, rotate_limit=45, p=0.3),
+        A.OneOf([
+            A.RandomFog(fog_coef_lower=0.3, fog_coef_upper=1.0, alpha_coef=.1),
+            A.ImageCompression(quality_lower=20, quality_upper=99),
+        ], p=0.3),
+        A.RandomBrightnessContrast(brightness_limit=0.125, contrast_limit=0.2, p=0.5), # contrast_limit=0.5
+        A.HueSaturationValue(hue_shift_limit=5, sat_shift_limit=30, val_shift_limit=20, p=0.2),
+        A.GaussNoise(var_limit=(1, 50), p=0.4),
+        A.CoarseDropout(min_holes=1, max_holes=2, max_height=cutout_crop, max_width=cutout_crop, p=0.5),
+    ], p=p)
+
+
 def factory(name, image_size, p=0.5, without_norm=False):
     tr_func = globals().get(name, None)
     if tr_func is None:

@@ -44,7 +44,8 @@ class ResNetFC(ResNet):
 
 
 def resnext50_32x4d_fc(num_classes=1, embedding_len=256, pretrained=True):
-    model = ResNetFC(embedding_len, Bottleneck, [3, 4, 6, 3], num_classes=num_classes, groups=32, width_per_group=4)
+    model = ResNetFC(embedding_len, Bottleneck, [3, 4, 6, 3], num_classes=num_classes, groups=32, width_per_group=4,
+                     ) #zero_init_residual=True)
     if pretrained:
         state_dict = torch.hub.load_state_dict_from_url(
             'https://dl.fbaipublicfiles.com/semiweaksupervision/model_files/semi_supervised_resnext50_32x4-ddb3e555.pth')

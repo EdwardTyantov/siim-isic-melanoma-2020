@@ -36,6 +36,10 @@ class Model(pl.LightningModule):
         self.val_dataset = ds.val_dataset
         self.test_dataset = ds.test_dataset
         
+    def log(self, *args, **kwargs):
+        if not (self.is_ddp and dist.get_rank() != 0):
+            logger.info(*args, **kwargs)
+        
     def forward(self, batch):
         # TODO: add other features
         out = self.model(batch['image'])
@@ -73,8 +77,7 @@ class Model(pl.LightningModule):
                 parameters.append({'params': layer.parameters(), 'lr': lr, 'after_warmup_lr': lr})
                 for param in layer.parameters():
                     param.requires_grad = True
-            if not (self.is_ddp and dist.get_rank() != 0): # TODO: self.log
-                logger.info(str(parameters))
+            self.log(str(parameters))
         else:
             parameters = self.model.parameters()
 
@@ -84,7 +87,8 @@ class Model(pl.LightningModule):
             optimizer = torch.optim.SGD(parameters, lr=self.lr, weight_decay=self.weight_decay, momentum=self.momentum)
         elif self.optimizer_name == 'rmsprop':
             optimizer = torch.optim.RMSprop(parameters, lr=self.lr, weight_decay=self.weight_decay)
-        scheduler = ReduceLROnPlateau(optimizer, patience=2, factor=0.2, verbose=True, callback=self.load_best_model)
+        scheduler = ReduceLROnPlateau(optimizer, patience=2, factor=0.2, verbose=True, threshold_mode='abs',
+                                      threshold=1e-6, callback=self.load_best_model)
         #scheduler = torch.optim.lr_scheduler.ExponentialLR(optimizer, gamma=0.97)
         return [optimizer], [scheduler]
 
@@ -104,9 +108,9 @@ class Model(pl.LightningModule):
             torch.distributed.barrier()
         with open(tmp_file) as rf:
             best_path = rf.read()
-        
-        logger.info(f'Loading best_path={best_path}')
+
         # perform load, only for gpu training
+        self.log(f'Loading best_path={best_path}')
         torch.cuda.empty_cache()
         obj = torch.load(best_path, map_location=lambda storage, loc: storage)
         model = self.trainer.get_model()
@@ -158,12 +162,11 @@ class Model(pl.LightningModule):
             avg_loss = gather(avg_loss.unsqueeze(dim=0)).mean()
             
         auc_roc = torch.tensor(roc_auc_score(targets.detach().cpu().numpy(), probs.detach().cpu().numpy()))
+        # that's used for all callbacks, why?!, val loss for reduce on plateau
         tensorboard_logs = {'val_loss': avg_loss, 'auc': auc_roc}
-        
-        if not (self.distributed_backend in ('ddp', 'ddp2') and dist.get_rank() != 0):
-            logger.info(f'Epoch {self.current_epoch}: {avg_loss:.5f}, auc: {auc_roc:.4f}')
+        self.log(f'Epoch {self.current_epoch}: {avg_loss:.5f}, auc: {auc_roc:.5f}')
 
-        return {'val_loss': auc_roc, 'log': tensorboard_logs}
+        return {'val_loss': avg_loss, 'log': tensorboard_logs}
 
     def test_step(self, batch, batch_idx):
         logits = self(batch)
@@ -198,7 +201,7 @@ def main():
     arg = parser.add_argument
     arg('--seed', type=int, default=666)
     arg('--distributed_backend', type=str, default='ddp')
-    arg('--num_workers', type=int, default=8)
+    arg('--num_workers', type=int, default=16)
     arg('--gpus', type=int, default=8)
     arg('--num_nodes', type=int, default=1)
     parser = Model.add_model_specific_args(parser)
@@ -214,14 +217,16 @@ def main():
     tb_logger = TensorBoardLogger(save_dir=RESULT_DIR, name=experiment_name, version=int(time.time()))
     checkpoint_callback = pl.callbacks.ModelCheckpoint(filepath=tb_logger.log_dir + "/{epoch:02d}-{auc:.5f}",
                                                    monitor='auc', mode='max', save_top_k=3, verbose=True)
-    earlystop_callback = pl.callbacks.EarlyStopping(monitor='auc', mode='max', patience=6, verbose=True) # doesit work ?
+    # set min_delta negative, b/c there's double run of early-stopping sometimes for v0.7.6
+    early_stop_callback = pl.callbacks.EarlyStopping(monitor='auc', mode='max', patience=9, #min_delta=-0.000001,
+                                                     verbose=True)
     
     model = Model(**vars(args))
     trainer = pl.Trainer.from_argparse_args(args, checkpoint_callback=checkpoint_callback,
-                                            early_stop_callback=earlystop_callback, logger=tb_logger,
-                                            # train_percent_check=0.01,
-                                            # num_sanity_val_steps=0,
-                                            # use_amp=False
+                                            early_stop_callback=early_stop_callback, logger=tb_logger,
+                                            # train_percent_check=0.1,
+                                            # num_sanity_val_steps=args.gpus,
+                                            use_amp=True,
                                             )
     trainer.fit(model)
     

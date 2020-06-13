@@ -26,6 +26,10 @@ class ReduceLROnPlateau(torch.optim.lr_scheduler.ReduceLROnPlateau):
         super()._reduce_lr(epoch)
         self._callback()
         
+    def step(self, metrics, epoch=None):
+        #print('LR:', float(metrics), epoch)
+        super().step(metrics, epoch)
+        
     def state_dict(self):
         return {key: value for key, value in self.__dict__.items() if key not in ('optimizer', '_callback')}
 

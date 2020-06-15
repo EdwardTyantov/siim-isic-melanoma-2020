@@ -1,4 +1,4 @@
-from .resnet import resnext50_32x4d_ssl, resnext50_32x4d_fc
+from .resnet import resnext50_32x4d_ssl, resnext50_32x4d_fc, resnext50_32x4d_2head
 from .efficient_net import efficientnetb4_classic_fc
 
 __all__ = ['factory', ]
@@ -16,8 +16,16 @@ def resnext50_32x4d_ssl_finetune(pretrained):
 def resnext50_32x4d_ssl_fc(embedding=256, pretrained=True):
     net = resnext50_32x4d_fc(num_classes=1, embedding_len=embedding, pretrained=pretrained)
     layers = {
-        'trained': [(net.layer4, 1), (net.layer3, 0.5)],
+        'trained': [(net.layer3, 0.5), (net.layer4, 1) ],
         'untrained': [(net.emb, 1), (net.fc, 1)],
+    }
+    return net, layers
+
+def resnext50_32x4d_ssl_2head(embedding=256, pretrained=True):
+    net = resnext50_32x4d_2head(num_classes=1, diagnosis_num=6, embedding_len=embedding, pretrained=pretrained)
+    layers = {
+        'trained': [(net.layer3, 0.5), (net.layer4, 1)],
+        'untrained': [(net.emb, 1), (net.fc, 1), (net.emb2, 10), (net.diagnosis_fc, 10)],
     }
     return net, layers
 
@@ -25,7 +33,6 @@ def resnext50_32x4d_ssl_fc(embedding=256, pretrained=True):
 def efficientnetb4_fc(embedding=256, pretrained=True):
     net = efficientnetb4_classic_fc(embedding_size=embedding, num_classes=1, pretrained=pretrained)
     layers = {
-        # 'trained': [(net.layer4, 1), (net.layer3, 0.5)],
         'trained': [(layer, 1) for layer in net._blocks[-8:]] + [(layer, 0.5) for layer in net._blocks[-20:-8]],
         'untrained': [(net._emb, 1), (net._fc, 1)],
     }

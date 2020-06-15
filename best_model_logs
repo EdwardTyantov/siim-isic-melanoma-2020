@@ -5,3 +5,9 @@ Epoch 00024: auc reached 0.95008 (best 0.95008), saving model to /mnt/fastdata/k
 efficientnet
 2020-06-09 12:07:46 Namespace(batch_size=64, distributed_backend='ddp', gpus=2, image_size=256, lr=1, max_epochs=30, model_name='efficientnetb4_fc', momentum=0.9, num_nodes=1, num_workers=4, optimizer_name='sgd', p=0.95,
  seed=666, transform_name='medium_2', weight_decay=1e-05)
+
+
+2head
+Namespace(batch_size=128, distributed_backend='ddp', gpus=8, image_size=256, lr=0.1, max_epochs=30, model_name='resnext50_32x4d_ssl_2head', momentum=0.9, num_nodes=1, num_workers=16, optimizer_name='s
+gd', p=0.95, seed=666, transform_name='medium_2', weight_decay=0.0005)
+2020-06-14 23:45:46 Loading best_path=/mnt/fastdata/kaggle/workdir/results/1eda349e1f5f6225285b421f3f4553c0/version_1592166350/epoch=12-val_loss=0.00384-auc=0.96582.ckpt

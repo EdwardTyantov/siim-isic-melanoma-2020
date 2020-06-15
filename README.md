@@ -11,9 +11,10 @@ Pytorch lightning code for SIIM-ISIC Melanoma Classification https://www.kaggle.
  - pip install efficientnet_pytorch 
  
  ### TODO:
+  - try overfea gpu_num=1
+  - samplers: for weighting rare classes p1_p2_p3...
   - aug-mix
-  - loss weighting
-  - loss (focal loss from retinanet)
+  - loss weighting ?
   - AutoAugment (https://www.kaggle.com/nxrprime/siim-eda-augmentations-model-seresnet-unet/)
   - other features & targets (MLP)
   - - drop each feature is set to missing with this prob

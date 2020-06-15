@@ -7,3 +7,4 @@ List:
  - 0.0.4 - added medium_3, fix of early stopping, large batch hyper-parameters for resnext,
   update albu to the lastest version
  - 0.0.5 - +amp, early_stop_callback fixes, scheduler tuning/debugging
+ - 0.0.6 - 2heads, gradient debug, best_model so far

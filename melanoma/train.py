@@ -8,9 +8,10 @@ from torch.utils.data import DataLoader
 import pytorch_lightning as pl
 from pytorch_lightning.loggers import TensorBoardLogger
 from config import IMAGE_DIR, TRAIN_CSV, TEST_CSV, RESULT_DIR
-from utils import init_seed
+from utils import init_seed, accuracy
 from models import factory as model_factory
 from models.losses import FocalLoss
+from models.gradients import GradientEstimator
 from data.utils import Datasets
 from utils import ReduceLROnPlateau
 
@@ -29,6 +30,8 @@ class Model(pl.LightningModule):
         self.hparams = kwargs
         self.is_ddp = self.distributed_backend in ('ddp', 'ddp2')
         self.num_workers = self.is_ddp and self.num_workers // self.gpus or self.num_workers
+        self.has_two_heads = self.model_name.find('2head') != -1 and self.diagnosis_loss_weight and \
+                             self.diagnosis_loss_weight > 0
         
     def prepare_data(self) -> None:
         ds = Datasets(IMAGE_DIR, TRAIN_CSV, TEST_CSV, self.transform_name, self.image_size, p=self.p, val_split=0.2)
@@ -39,14 +42,19 @@ class Model(pl.LightningModule):
     def log(self, *args, **kwargs):
         if not (self.is_ddp and dist.get_rank() != 0):
             logger.info(*args, **kwargs)
-        
+            
     def forward(self, batch):
         # TODO: add other features
         out = self.model(batch['image'])
-        return out
+        if self.has_two_heads:
+            assert isinstance(out, tuple)
+            return {'target': out[0], 'diagnosis': out[1]}
+        
+        return {'target': out}
     
     def init_loss(self):
-        self.loss = FocalLoss(logits=True)
+        self.loss = FocalLoss(ce_func='bce')
+        self.d_loss = FocalLoss(ce_func='ce')
 
     def train_dataloader(self):
         # TODO: add sampler, great imbalance of zeros, don't forget to replace_sampler_ddp ?
@@ -67,14 +75,16 @@ class Model(pl.LightningModule):
             parameters = []
             for param in self.model.parameters():
                 param.requires_grad = False
-            for layer, scale in self.layers['untrained']:
-                parameters.append({'params': layer.parameters(), 'lr': scale*self.lr})
-                for param in layer.parameters():
-                    param.requires_grad = True
+            
             for layer, scale in self.layers['trained']:
                 self.warmup = 1
                 lr = scale * self.lr
                 parameters.append({'params': layer.parameters(), 'lr': lr, 'after_warmup_lr': lr})
+                for param in layer.parameters():
+                    param.requires_grad = True
+                    
+            for layer, scale in self.layers['untrained']:
+                parameters.append({'params': layer.parameters(), 'lr': scale*self.lr})
                 for param in layer.parameters():
                     param.requires_grad = True
             self.log(str(parameters))
@@ -82,15 +92,19 @@ class Model(pl.LightningModule):
             parameters = self.model.parameters()
 
         if self.optimizer_name == 'adam':
-            optimizer = torch.optim.Adam(parameters, lr=self.lr, weight_decay=self.weight_decay)
+            self.optimizer = torch.optim.Adam(parameters, lr=self.lr, weight_decay=self.weight_decay)
         elif self.optimizer_name == 'sgd':
-            optimizer = torch.optim.SGD(parameters, lr=self.lr, weight_decay=self.weight_decay, momentum=self.momentum)
+            self.optimizer = torch.optim.SGD(parameters, lr=self.lr, weight_decay=self.weight_decay, momentum=self.momentum)
         elif self.optimizer_name == 'rmsprop':
-            optimizer = torch.optim.RMSprop(parameters, lr=self.lr, weight_decay=self.weight_decay)
-        scheduler = ReduceLROnPlateau(optimizer, patience=2, factor=0.2, verbose=True, threshold_mode='abs',
+            self.optimizer = torch.optim.RMSprop(parameters, lr=self.lr, weight_decay=self.weight_decay)
+
+        self._grad_estimator = GradientEstimator(self.model, parameters)
+        
+        scheduler = ReduceLROnPlateau(self.optimizer, patience=2, factor=0.2, verbose=True, threshold_mode='abs',
                                       threshold=1e-6, callback=self.load_best_model)
         #scheduler = torch.optim.lr_scheduler.ExponentialLR(optimizer, gamma=0.97)
-        return [optimizer], [scheduler]
+        
+        return [self.optimizer], [scheduler]
 
     def load_best_model(self):
         "Don't try at home. This is done for ReduceLROnPlateau to load best weights, when reduce LR"
@@ -137,40 +151,71 @@ class Model(pl.LightningModule):
     
     def training_step(self, batch, batch_idx):
         # TODO: try data echoing
-        logits = self(batch)
-        loss = self.loss(logits, batch['target'])
-        return {'loss': loss, 'log': {'train_loss': loss}}
+        batch_logits = self(batch)
+        logits = batch_logits['target']
+        t_loss = self.loss(logits, batch['target'])
+        weighted_losses = {'target_loss': t_loss}
+        
+        if self.has_two_heads:
+            d_logits = batch_logits['diagnosis']
+            d_targets = batch['diagnosis']
+            index = d_targets.data != (-1)  # select only valid diagnosis
+            # weights = self.train_dataset.diagnosis_weights.to(d_logits.device)
+            d_loss = self.d_loss(d_logits[index], d_targets[index]) if d_logits[index].size(0) > 0 else 0
+            weighted_losses['diagnosis_loss'] = d_loss * self.diagnosis_loss_weight
+        
+        loss = sum(weighted_losses.values())
+        metrics = {'train_loss': loss}
+        if batch_idx and self.log_steps_grad and batch_idx % self.log_steps_grad == 0:
+            grad_metrics = self._grad_estimator(weighted_losses)
+            metrics.update(grad_metrics)
+        metrics.update(weighted_losses)
+        
+        return {'loss': loss, 'log': metrics}
 
     def validation_step(self, batch, batch_idx):
-        logits = self(batch)
+        batch_logits = self(batch)
+        logits = batch_logits['target']
         loss = self.loss(logits, batch['target'])
         probs = torch.sigmoid(logits)
-        return {'val_loss': loss, 'probs': probs.squeeze(1), 'target': batch['target'].squeeze(1)}
+        metrics = {'val_loss': loss, 'probs': probs.squeeze(1), 'target': batch['target'].squeeze(1)}
         
-    def validation_epoch_end(self, outputs):
+        if self.has_two_heads:
+            d_logits = batch_logits['diagnosis']
+            d_targets = batch['diagnosis']
+            index = d_targets.data != (-1)
+            metrics['d_acc'] = accuracy(d_logits[index], d_targets[index])[0]
+
+        return metrics
+        
+    def validation_epoch_end(self, metric_list):
         def gather(t):
             gather_t = [torch.ones_like(t)] * dist.get_world_size()
             dist.all_gather(gather_t, t)
             return torch.cat(gather_t)
-        avg_loss = torch.stack([out['val_loss'] for out in outputs]).mean()
-        probs = torch.cat([out['probs'] for out in outputs], dim=0)
-        targets = torch.cat([out['target'] for out in outputs], dim=0)
+        probs = torch.cat([out['probs'] for out in metric_list], dim=0)
+        targets = torch.cat([out['target'] for out in metric_list], dim=0)
+        avg_loss = torch.stack([out['val_loss'] for out in metric_list]).mean()
+        if self.has_two_heads:
+            d_accs = torch.stack([out['d_acc'] for out in metric_list]).mean()
         
         if self.is_ddp:
             probs = gather(probs)
             targets = gather(targets)
             avg_loss = gather(avg_loss.unsqueeze(dim=0)).mean()
+            avg_d_acc = gather(d_accs.unsqueeze(dim=0)).mean() if self.has_two_heads else float('nan')
             
         auc_roc = torch.tensor(roc_auc_score(targets.detach().cpu().numpy(), probs.detach().cpu().numpy()))
         # that's used for all callbacks, why?!, val loss for reduce on plateau
-        tensorboard_logs = {'val_loss': avg_loss, 'auc': auc_roc}
-        self.log(f'Epoch {self.current_epoch}: {avg_loss:.5f}, auc: {auc_roc:.5f}')
+        tensorboard_logs = {'val_loss': avg_loss, 'auc': auc_roc, 'd_acc': avg_d_acc,
+                            'lr': self.optimizer.param_groups[0]['lr']}
+        self.log(f'Epoch {self.current_epoch}: {avg_loss:.5f}, auc: {auc_roc:.5f}, d_acc: {avg_d_acc:.5f}')
 
         return {'val_loss': avg_loss, 'log': tensorboard_logs}
 
     def test_step(self, batch, batch_idx):
-        logits = self(batch)
-        probs = torch.sigmoid(logits)
+        batch_logits = self(batch)
+        probs = torch.sigmoid(batch_logits['target'])
         return {'probs': probs}
     
     def test_epoch_end(self, outputs):
@@ -183,16 +228,20 @@ class Model(pl.LightningModule):
     def add_model_specific_args(parent_parser):
         parser = argparse.ArgumentParser(parents=[parent_parser], add_help=False)
         arg = parser.add_argument
-        arg('--model_name', default='resnext50_32x4d_ssl_fc', help='Name of a model for factory') # resnext50_32x4d_ssl_fc
+        arg('--model_name', default='resnext50_32x4d_ssl_fc', help='Name of a model for factory')  # resnext50_32x4d_ssl_fc
         arg('--transform_name', type=str, default='medium_2', help='Name for transform factory')
         arg('--optimizer_name', type=str, default='sgd', help='sgd/adam/rmsprop')
         arg('--image_size', type=int, default=256, help='image size NxN')
-        arg('--p', type=float, default=0.95, help='prob of an augmentation') # exp
-        arg('--batch_size', type=int, default=128, help='batch_size per gpu') # 128
-        arg('--lr', type=float, default=0.1)  # 1e-1
-        arg('--weight_decay', type=float, default=5e-4) # 5e-4
+        arg('--p', type=float, default=0.95, help='prob of an augmentation')  # exp
+        arg('--batch_size', type=int, default=128, help='batch_size per gpu')  # 128
+        arg('--lr', type=float, default=0.1)  # 0.1
+        arg('--weight_decay', type=float, default=5e-4)  # 5e-4
         arg('--momentum', type=float, default=0.9)
-        arg('--max_epochs', type=int, default=30) # 30
+        arg('--max_epochs', type=int, default=30)
+        arg('--use_amp', type=bool, default=True)
+        # secondary params
+        arg('--diagnosis_loss_weight', type=float, default=None, help='abs weight for the secondary head')  # 0.1
+        arg('--log_steps_grad', type=int, default=None, help='How often to store gradients from losses to TensorBoard') # TODO: affects loop check for low LR
         return parser
 
 
@@ -215,10 +264,10 @@ def main():
     experiment_name = md5(bytes(str(args), encoding='utf8')).hexdigest()
     logger.info(str(args)); logger.info(f'experiment_name={experiment_name}')
     tb_logger = TensorBoardLogger(save_dir=RESULT_DIR, name=experiment_name, version=int(time.time()))
-    checkpoint_callback = pl.callbacks.ModelCheckpoint(filepath=tb_logger.log_dir + "/{epoch:02d}-{auc:.5f}",
-                                                   monitor='auc', mode='max', save_top_k=3, verbose=True)
+    checkpoint_callback = pl.callbacks.ModelCheckpoint(filepath=tb_logger.log_dir + "/{epoch:02d}-{val_loss:.5f}-{auc:.5f}",
+                                                   monitor='val_loss', mode='min', save_top_k=5, verbose=True)
     # set min_delta negative, b/c there's double run of early-stopping sometimes for v0.7.6
-    early_stop_callback = pl.callbacks.EarlyStopping(monitor='auc', mode='max', patience=9, #min_delta=-0.000001,
+    early_stop_callback = pl.callbacks.EarlyStopping(monitor='auc', mode='max', patience=11, #min_delta=-0.000001,
                                                      verbose=True)
     
     model = Model(**vars(args))
@@ -226,7 +275,6 @@ def main():
                                             early_stop_callback=early_stop_callback, logger=tb_logger,
                                             # train_percent_check=0.1,
                                             # num_sanity_val_steps=args.gpus,
-                                            use_amp=True,
                                             )
     trainer.fit(model)
     

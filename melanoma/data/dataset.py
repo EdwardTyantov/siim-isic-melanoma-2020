@@ -1,22 +1,47 @@
-import os, sys, cv2, torch
-from collections import defaultdict
-import numpy as np
-import pandas as pd
+import os, sys, cv2, torch, operator, math
+import numpy as np, pandas as pd
 from torch.utils.data import Dataset
 
 
+MAP_NAMES = ('sex', 'anatom_site_general_challenge', 'diagnosis')
+
+
+def init_mapping(train_df, min_num=5):
+    mapping_dict = {fname:{} for fname in MAP_NAMES}
+    for feature_name in MAP_NAMES:
+        if feature_name == 'diagnosis':
+            mapping_dict[feature_name]['unknown'] = -1
+        cnt = 0
+        for key, value in sorted(train_df[feature_name].value_counts().items(), key=operator.itemgetter(0)):
+            if not isinstance(key, str):
+                continue
+            if key in mapping_dict[feature_name]:
+                continue
+            if min_num > 0 and value < min_num:
+                print(f'Patching mapping: feature_name={feature_name}, key={key} with unknown')
+                mapping_dict[feature_name][key] = mapping_dict[feature_name]['unknown']
+            else:
+                mapping_dict[feature_name][key] = cnt
+                cnt += 1
+        
+    return mapping_dict
+
+
 class SIIMDataset(Dataset):
-    def __init__(self, data_path, df_path, transform=None, is_test=False):
+    def __init__(self, data_path, df_path, mapping_dict, transform=None, is_test=False):
         super(SIIMDataset).__init__()
         self.__data_path = data_path
         self.is_test = is_test
         self.__dirname = os.path.join(data_path, is_test and 'test' or 'train')
         self.df = pd.read_csv(df_path) if isinstance(df_path, str) else df_path
         self.transform = transform
-        self.feature_names = ['sex', 'age_approx', 'anatom_site_general_challenge'] # TODO:
-        # anatom_site_general_challenge nan = 0 ... 0
-        self.target_features = ['diagnosis', 'benign_malignant'] # TODO: diagnosis mapping unknown = 0...0
-    
+        self.feature_names = ['sex', 'age_approx', 'anatom_site_general_challenge']
+        self.mapping_dict = mapping_dict
+        if not is_test:
+            dw = {self.mapping_dict['diagnosis'][k]: 1 / count for k, count in self.df['diagnosis'].value_counts().items()}
+            dw.pop(-1)
+            self.diagnosis_weights = torch.FloatTensor([v/sum(dw.values()) for k,v in sorted(dw.items())])
+        
     def __getitem__(self, idx):
         meta = self.df.iloc[idx]
 
@@ -30,31 +55,20 @@ class SIIMDataset(Dataset):
             img = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
             img = self.transform(image=img)['image']
         
-        # TODO: str/nans nahuy
-        item = {'image': img, 'path': image_name} # 'features': [meta[fname] for fname in self.feature_names]
+        item = {'image': img, 'path': image_name}
+        # for fname in self.feature_names:
+        #     value = meta[fname]
+        #     if isinstance(value, float) and math.isnan(value):
+        #         value = -1
+        #     elif fname in MAP_NAMES:
+        #         value = self.mapping_dict[fname][value]
+        #     item[fname] = value
+
         if not self.is_test:
             item['target'] = torch.FloatTensor([meta['target']])
-            #item['target_features'] = [meta[fname] for fname in self.target_features]
+            item['diagnosis'] = self.mapping_dict['diagnosis'][meta['diagnosis']]
         
         return item
-    
-    # @staticmethod
-    # def collate_fn(batch):
-    #     res = defaultdict(list)
-    #     for sample in batch:
-    #         for k,v in sample.items():
-    #             if k
-    #
-    #
-    #
-    #         images.append(torch.from_numpy(sample["image"].transpose((2, 0, 1))).float())
-    #         seqs.extend(sample["seq"])
-    #         seq_lens.append(sample["seq_len"])
-    #     images = torch.stack(images)
-    #     seqs = torch.Tensor(seqs).int()
-    #     seq_lens = torch.Tensor(seq_lens).int()
-    #     batch = {"images": images, "seqs": seqs, "seq_lens": seq_lens}
-    #     return batch
         
     def __len__(self):
         return len(self.df)
@@ -90,6 +104,32 @@ def resize():
         cv2.imwrite(new_path, img_resized)
 
 
+def main():
+    sys.path.insert(0, '..')
+    from config import TRAIN_CSV, TEST_CSV, IMAGE_DIR
+    train_df = pd.read_csv(TRAIN_CSV)
+    test_df = pd.read_csv(TEST_CSV)
+    print('train')
+    mapping = init_mapping(train_df)
+    print(mapping)
+    ds = SIIMDataset(IMAGE_DIR, train_df, mapping, is_test=0)
+    print(len(train_df))
+    print(ds[0])
+    print('test')
+    print(len(test_df))
+    ds = SIIMDataset(IMAGE_DIR, test_df, mapping, is_test=1)
+    print(ds[1])
+    
+
+    feature_names = ['sex', 'anatom_site_general_challenge', 'diagnosis', 'age_approx']
+    for fname in feature_names:
+        cnt = 0
+        for k in train_df[fname]:
+            if isinstance(k, float) and math.isnan(k):
+                cnt += 1
+
+        print(fname, cnt)
+
 
 if __name__ == '__main__':
-    sys.exit(resize())
+    sys.exit(main())

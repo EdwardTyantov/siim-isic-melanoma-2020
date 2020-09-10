@@ -12,16 +12,12 @@ Pytorch lightning code for SIIM-ISIC Melanoma Classification https://www.kaggle.
  
  ### TODO:
   - aug-mix
-  - loss weighting
-  - loss (focal loss from retinanet)
   - AutoAugment (https://www.kaggle.com/nxrprime/siim-eda-augmentations-model-seresnet-unet/)
   - other features & targets (MLP)
   - - drop each feature is set to missing with this prob
   - Kfold (stratified: https://www.kaggle.com/zzy990106/pytorch-5-fold-efficientnet-baseline/notebook?select=auto_augment.py)
   - data echoing (https://arxiv.org/abs/1907.05550)
-  - prepare data (resize, numpy)
   - try hyper-opt/optuna (focal loss weight, batch, emb-size)
   - tta (multi_crop=5, flips, scale, )
   - ensembling
-  - todo:  ElasticTransform
  
